@@ -2,8 +2,6 @@ name: Build Sub-Store
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 5 * * 1'  # 每周一凌晨 5 点自动构建
 
 permissions:
   contents: write
