@@ -1,0 +1,94 @@
+name: Build it-tools
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      # ── 1. 拉取最新 it-tools 源码 ─────────────────────────────────────────
+      - name: Clone it-tools
+        run: git clone --depth=1 https://github.com/CorentinTh/it-tools.git frontend
+
+      - name: Get upstream commit SHA
+        id: upstream
+        run: |
+          cd frontend
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # ── 2. 构建前端 ────────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: frontend
+        run: pnpm build
+
+      # ── 3. 组装 Go 项目 ────────────────────────────────────────────────────
+      - name: Assemble Go project
+        run: |
+          cp -r repo/it-tools-server build
+          cp -r frontend/dist build/dist
+
+      # ── 4. 生成 tag 名 ─────────────────────────────────────────────────────
+      - name: Generate tag name
+        id: tag
+        run: echo "name=it-tools-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.sha }}" >> $GITHUB_OUTPUT
+
+      # ── 5. Setup Go ────────────────────────────────────────────────────────
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      # ── 6. 交叉编译 ────────────────────────────────────────────────────────
+      - name: Build binaries
+        run: |
+          cd build
+          platforms=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+          )
+          mkdir -p ../release
+          for platform in "${platforms[@]}"; do
+            OS="${platform%/*}"
+            ARCH="${platform#*/}"
+            OUTPUT="it-tools_${OS}_${ARCH}"
+            [ "$OS" = "windows" ] && OUTPUT="${OUTPUT}.exe"
+            echo "Building $OUTPUT ..."
+            GOOS=$OS GOARCH=$ARCH go build -ldflags="-s -w" -o "../release/$OUTPUT" .
+          done
+
+      # ── 7. Create Release ──────────────────────────────────────────────────
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          body: |
+            Built from [CorentinTh/it-tools@${{ steps.upstream.outputs.sha }}](https://github.com/CorentinTh/it-tools/commit/${{ steps.upstream.outputs.sha }})
+          files: release/*
