@@ -1,0 +1,127 @@
+name: Build zashboard
+
+on:
+  workflow_dispatch:
+    inputs:
+      font_mode:
+        description: 'Font build mode'
+        required: true
+        default: 'MiSans'
+        type: choice
+        options:
+          - default
+          - cdn-fonts
+          - MiSans
+          - PingFang
+          - SarasaUi
+          - FiraSans
+          - SystemUI
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      # ── 1. 拉取最新 zashboard 源码 ────────────────────────────────────────
+      - name: Clone zashboard
+        run: git clone --depth=1 https://github.com/Zephyruso/zashboard.git frontend
+
+      - name: Get upstream commit SHA
+        id: upstream
+        run: |
+          cd frontend
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      # ── 2. 确定字体模式（schedule 触发时用默认值 MiSans）────────────────────
+      - name: Determine font mode
+        id: font
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.font_mode }}" >> $GITHUB_OUTPUT
+          else
+            echo "mode=MiSans" >> $GITHUB_OUTPUT
+          fi
+
+      # ── 3. 构建前端 ────────────────────────────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          MODE="${{ steps.font.outputs.mode }}"
+          if [ "$MODE" = "default" ]; then
+            pnpm vite build
+          else
+            pnpm vite build --mode "$MODE"
+          fi
+
+      # ── 4. 组装 Go 项目 ────────────────────────────────────────────────────
+      - name: Assemble Go project
+        run: |
+          cp -r repo/zashboard-server build
+          cp -r frontend/dist build/dist
+
+      # ── 5. 生成 tag 名 ─────────────────────────────────────────────────────
+      - name: Generate tag name
+        id: tag
+        run: |
+          echo "name=zashboard-$(date -u +%Y%m%d)-${{ steps.upstream.outputs.sha }}-${{ steps.font.outputs.mode }}" >> $GITHUB_OUTPUT
+
+      # ── 6. Setup Go ────────────────────────────────────────────────────────
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      # ── 7. 交叉编译 ────────────────────────────────────────────────────────
+      - name: Build binaries
+        run: |
+          cd build
+          FONT="${{ steps.font.outputs.mode }}"
+          platforms=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+          )
+          mkdir -p ../release
+          for platform in "${platforms[@]}"; do
+            OS="${platform%/*}"
+            ARCH="${platform#*/}"
+            OUTPUT="zashboard_${FONT}_${OS}_${ARCH}"
+            [ "$OS" = "windows" ] && OUTPUT="${OUTPUT}.exe"
+            echo "Building $OUTPUT ..."
+            GOOS=$OS GOARCH=$ARCH go build -ldflags="-s -w" -o "../release/$OUTPUT" .
+          done
+
+      # ── 8. Create Release ──────────────────────────────────────────────────
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: ${{ steps.tag.outputs.name }}
+          body: |
+            Built from [Zephyruso/zashboard@${{ steps.upstream.outputs.sha }}](https://github.com/Zephyruso/zashboard/commit/${{ steps.upstream.outputs.sha }})
+            Font mode: `${{ steps.font.outputs.mode }}`
+          files: release/*
