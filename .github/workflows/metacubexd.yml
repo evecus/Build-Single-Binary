@@ -2,6 +2,8 @@ name: Build metacubexd
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * 1'  # 每周一凌晨 4 点自动构建
 
 permissions:
   contents: write
@@ -37,11 +39,12 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@v3
         with:
-          version: 9
+          # 不指定 version，自动读取 metacubexd/package.json 的 packageManager 字段
+          package_json_file: frontend/package.json
 
       - name: Install dependencies
         working-directory: frontend
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --no-frozen-lockfile
 
       - name: Generate static files
         working-directory: frontend
